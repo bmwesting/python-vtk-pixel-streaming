@@ -8,7 +8,8 @@ class Visualizer:
     '''
     Encapsulates the VTK pipeline and provides accessor methods.
     '''
-    def __init__(self):
+    def __init__(self, clientsock):
+        self.client = clientsock
         self.ren = vtkRenderer() 
         self.iren = vtkRenderWindowInteractor() 
         self.renwin = vtkRenderWindow() 
@@ -49,3 +50,5 @@ class Visualizer:
             # StringIO servers as a memory endpoint for the compressed JPEG
             output = StringIO()
             img.save(output, format="JPEG")
+            self.client.send(output)
+
