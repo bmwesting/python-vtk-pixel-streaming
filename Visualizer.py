@@ -45,7 +45,9 @@ class Visualizer:
             rawImageArray = numpy.array(rawImage.flatten(), numpy.uint8)
 
             # convert to a PIL image so we can compress as JPG and stream over a socket
-            img = Image.fromstring('RGB',(300,300), rawImageArray, 'raw', 'RGB')
+            x = self.renwin.GetSize()[0]
+            y = self.renwin.GetSize()[1]
+            img = Image.fromstring('RGB',(x,y), rawImageArray, 'raw', 'RGB')
 
             # StringIO serves as a memory endpoint for the compressed JPEG
             output = StringIO()

@@ -8,7 +8,7 @@ Protocol:
 '''
 
 from socket import *
-from PIL import ImageFile
+from PIL import ImageFile, Image
 
 HOST = 'localhost'
 PORT = 1234
@@ -22,7 +22,7 @@ def receiveImage(sock, size):
     parser.feed(jpg)
 
     img = parser.close()
-    img.show()
+    img.transpose(Image.FLIP_TOP_BOTTOM).show()
 
 server = socket(AF_INET, SOCK_STREAM)
 server.connect((HOST, PORT))

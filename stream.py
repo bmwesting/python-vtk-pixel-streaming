@@ -9,6 +9,7 @@ if __name__ == '__main__':
     PORT = 1234
     BUFSIZE = 1024
     serversock = socket(AF_INET, SOCK_STREAM)
+    serversock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     serversock.bind((HOST, PORT))
     serversock.listen(1)
 
@@ -21,5 +22,5 @@ if __name__ == '__main__':
     
     # does it ever get here
     print 'Closing socket connection.'
-    serversock.shutdown()
+    serversock.shutdown(1)
     serversock.close()
