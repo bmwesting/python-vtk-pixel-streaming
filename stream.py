@@ -17,4 +17,4 @@ if __name__ == '__main__':
     print 'Client connected from:', addr
 
     vis = Visualizer(clientsock)
-    vis.Start()
+    vis.start()

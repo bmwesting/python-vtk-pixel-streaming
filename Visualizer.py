@@ -13,7 +13,7 @@ class Visualizer:
         self.ren = vtkRenderer() 
         self.iren = vtkRenderWindowInteractor() 
         self.renwin = vtkRenderWindow() 
-        self.renwin.AddRenderer(self.ren) 
+        self.renwin.AddRenderer(self.ren)
         self.renwin.SetInteractor(self.iren)
         # The WindowToImageFilter grabs the framebuffer pixels
         self.w2i = vtk.vtkWindowToImageFilter()
@@ -50,5 +50,5 @@ class Visualizer:
             # StringIO servers as a memory endpoint for the compressed JPEG
             output = StringIO()
             img.save(output, format="JPEG")
-            self.client.send(output)
+            self.client.send(output.getvalue())
 
