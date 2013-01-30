@@ -10,9 +10,9 @@ class Visualizer:
     '''
     def __init__(self, clientsock):
         self.client = clientsock
-        self.ren = vtkRenderer() 
-        self.iren = vtkRenderWindowInteractor() 
-        self.renwin = vtkRenderWindow() 
+        self.ren = vtkRenderer()
+        self.iren = vtkRenderWindowInteractor()
+        self.renwin = vtkRenderWindow()
         self.renwin.AddRenderer(self.ren)
         self.renwin.SetInteractor(self.iren)
         # The WindowToImageFilter grabs the framebuffer pixels
@@ -35,20 +35,31 @@ class Visualizer:
         Grabs the current framebuffer, coverts it to a JPEG, and sends it through the socket.
         '''
         if obj.GetKeySym() == 's':
-            print 'Sending pixel stream.'
             self.renwin.Render()
+            self.w2i.Modified()
             self.w2i.Update()
             imageData = self.w2i.GetOutput()
 
-            # Convert the vtk 2d framebuffer into a numpy array
+            # Convert the GL framebuffer into a numpy array
             rawImage = VN.vtk_to_numpy(imageData.GetPointData().GetScalars())
             rawImageArray = numpy.array(rawImage.flatten(), numpy.uint8)
 
             # convert to a PIL image so we can compress as JPG and stream over a socket
             img = Image.fromstring('RGB',(300,300), rawImageArray, 'raw', 'RGB')
 
-            # StringIO servers as a memory endpoint for the compressed JPEG
+            # StringIO serves as a memory endpoint for the compressed JPEG
             output = StringIO()
             img.save(output, format="JPEG")
-            self.client.send(output.getvalue())
+            
+            # get a byte array of the jpg then send:
+            # 1. size stamp 1+8 bytes
+            # 2. image buffer
+            # 3. end stamp
+            buf = output.getvalue()
+            datasize = str(len(buf))
+            datasize = datasize.zfill(8)
+            print 'Sending pixel stream of size: ' + datasize + ' bytes.'
+            self.client.send('s' + datasize)
+            self.client.send(buf)
+            self.client.send('e')
 

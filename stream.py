@@ -18,3 +18,8 @@ if __name__ == '__main__':
 
     vis = Visualizer(clientsock)
     vis.start()
+    
+    # does it ever get here
+    print 'Closing socket connection.'
+    serversock.shutdown()
+    serversock.close()
