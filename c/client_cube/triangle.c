@@ -1,4 +1,9 @@
 /*
+ Modified from Broadcom's code (with copyright below).
+ Modified by Brandt Westing, Texas Advanced Computing Center, 2013.
+*/
+
+/*
 Copyright (c) 2012, Broadcom Europe Ltd
 All rights reserved.
 
@@ -33,6 +38,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <math.h>
 #include <assert.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <fcntl.h>
 
 #include "bcm_host.h"
 
@@ -45,6 +56,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define PATH "./"
 
 #define IMAGE_SIZE 128
+
+#define HEADER_SIZE 9
 
 #ifndef M_PI
    #define M_PI 3.141592654
@@ -76,6 +89,11 @@ typedef struct
    char *tex_buf2;
    char *tex_buf3;
 } CUBE_STATE_T;
+
+struct thread_data{
+    CUBE_STATE_T* state;
+    int sd;
+};
 
 static void init_ogl(CUBE_STATE_T *state);
 static void init_model_proj(CUBE_STATE_T *state);
@@ -498,6 +516,145 @@ static void load_tex_images(CUBE_STATE_T *state)
    }   
 }
 
+/*
+ * Receive loop for JPG Streams. Binds new JPG to texture.
+ *
+ */
+void *handler_thread(void *threadarg)
+{
+
+    struct thread_data *data = (struct thread_data *) threadarg;
+    int sock = data->sd;
+    CUBE_STATE_T *state = data->state;
+
+    // protocol receives header, then file, then end
+    char header[HEADER_SIZE];
+    char *jpg;
+    char end;
+
+    memset(header, 0, sizeof(header));
+
+    while(1)
+    {
+       if (recv(sock, header, HEADER_SIZE, 0) == -1)
+       {
+            perror("recieve error\n");
+            break;
+       }
+       else
+       {
+           // received the header (we think), parse it 
+           if(header[0] == "s")
+           {
+                // header received, filesize follows
+                char *filesize = header+1;
+                printf("Received header of size: %s.\n", filesize);
+                return;
+
+           }
+           else
+           {
+                printf("Expected header but got: %s.\n", header);
+                return;
+           }
+       }
+    }
+
+}
+
+/*
+ * Creates a socket connection to a render server for JPG streaming.
+ *
+ */
+
+int connect_to_server(char* hostname, int port, struct thread_data *data)
+{
+    int sd; // file descriptor index
+    struct sockaddr_in s_address; // server
+    struct sockaddr_in c_address; // client
+    struct hostent *hp;
+    int rv;
+    
+    // --- Create a socket connection
+    
+    // IP lookup
+    hp = gethostbyname(hostname);
+    if (hp)
+    {
+        printf("host found: %p\n", hp);
+        printf("host found: %s\n", hp->h_name );
+    }
+    else
+    {
+        printf("host not found\n");
+    }
+
+    // fill socket structure
+    memset(&s_address, 0, sizeof(s_address));
+    s_address.sin_family = AF_INET;
+    memcpy(&s_address.sin_addr, hp->h_addr, hp->h_length);
+    s_address.sin_port = htons(port);
+
+    memset(&c_address, 0, sizeof(c_address));
+    c_address.sin_family = AF_INET;
+    c_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    c_address.sin_port = htons(port);
+
+    // get an INET socket
+    if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+    {
+        perror("socket error");
+        return -1;
+    }
+
+    // bind socket
+    sd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sd < 0)
+        exit(1);
+    else    {
+        printf("socket is opened: %i \n", sd);
+        /*
+        rv = fcntl(sd, F_SETFL, O_NONBLOCK); // socket set to NONBLOCK
+        if(rv < 0)
+            printf("nonblock failed: %i %s\n", errno, strerror(errno));
+        else
+            printf("socket is set nonblock\n");
+        */
+    } 
+
+    struct timeval timeout;
+    timeout.tv_sec = 0;     // seconds
+    timeout.tv_usec = 500000; // micro seconds ( 0.5 seconds)
+    setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)); 
+
+    // bind socket
+    rv = bind(sd, (struct sockaddr *) &c_address, sizeof(c_address));
+    if (rv < 0)     {
+        printf("MAIN: ERROR bind() %i: %s\n", errno, strerror(errno));
+        exit(1);
+    }
+    else
+        printf("socket is bound\n");
+
+    // connect to server
+    rv = connect(sd, (struct sockaddr *) &s_address, sizeof(s_address));
+    printf("rv = %i\n", rv);
+    if (rv < 0 && errno != EINPROGRESS)     {
+        printf("MAIN: ERROR connect() %i:  %s\n", errno, strerror(errno));
+        exit(1);
+    }
+    else
+        printf("connected\n");
+
+    // --- Create a handler thread
+    data->sd = sd;
+    pthread_t thread;
+    pthread_create(&thread, NULL, handler_thread, (void *) data); 
+    pthread_detach(thread);
+
+    return 0;
+}
+
 //------------------------------------------------------------------------------
 
 static void exit_func(void)
@@ -523,7 +680,7 @@ static void exit_func(void)
 
 //==============================================================================
 
-int main ()
+int main (int argc, char** argv)
 {
    bcm_host_init();
 
@@ -538,6 +695,18 @@ int main ()
 
    // initialise the OGLES texture(s)
    init_textures(state);
+
+   // Open a socket connection to the server
+   // This should thread out the recv and building of the texture
+   char* hostname;
+   int port = 1234;
+   if(argc > 1)
+   {
+      hostname = argv[1];
+      port = atoi(argv[2]); 
+   }
+   struct thread_data shared_data;
+   connect_to_server(hostname, port, &shared_data);
 
    while (!terminate)
    {

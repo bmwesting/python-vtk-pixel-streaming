@@ -1,4 +1,9 @@
 /*
+ Modified from Broadcom's code (with copyright below).
+ Modified by Brandt Westing, Texas Advanced Computing Center, 2013.
+*/
+
+/*
 Copyright (c) 2012, Broadcom Europe Ltd
 All rights reserved.
 
