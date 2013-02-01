@@ -529,6 +529,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
 {
     // decode jpg w/ ljpg
     FILE * fd;
+    char* image;
     int width, height, depth;
     fd = fmemopen(raw, raw_length, "rb");
     struct jpeg_decompress_struct cinfo;
@@ -540,7 +541,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
     jpeg_stdio_src(&cinfo, fd);
     jpeg_read_header(&cinfo, 0);
     cinfo.scale_num = 1;
-    cinfo.scale_denom = SCALE;
+    cinfo.scale_denom = 1;
     jpeg_start_decompress(&cinfo);
     width = cinfo.output_width;
     height = cinfo.output_height;
@@ -551,6 +552,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
     while( cinfo.output_scanline < cinfo.output_height )
     {
         jpeg_read_scanlines( &cinfo, row_pointer, 1 );
+        int i;
         for( i=0; i< (width * depth); i++)
             image[location++] = row_pointer[0][i];
     }
@@ -565,7 +567,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
     // create texture
     state->tex_buf1 = image;
     glBindTexture(GL_TEXTURE_2D, state->tex[0]);
-    glTexImage2D(GL_TEXTURE_RECTANGLE_ARB, 0, depth, width, height, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, depth, width, height, 0,
                 GL_RGB, GL_UNSIGNED_BYTE, state->tex_buf1);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLfloat)GL_NEAREST);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLfloat)GL_NEAREST);
@@ -592,7 +594,7 @@ void *handler_thread(void *threadarg)
     // protocol receives header, then file, then end
     char header[HEADER_SIZE];
     char *jpg_raw;
-    char end;
+    char end[1];
 
     memset(header, 0, sizeof(header));
 
@@ -609,24 +611,44 @@ void *handler_thread(void *threadarg)
            if(header[0] == 's')
            {
                 // header received, filesize follows
-                char *filesize = header+1;
-                printf("Receiving JPEG of size: %s.\n", filesize);
+                int filesizei = atoi(&header[1]);
+                printf("Receiving JPEG of size: %d.\n", filesizei);
 
                 // allocate space for jpg and read from socket
-                filesizei = atoi(filesize);
                 jpg_raw = malloc(filesizei);
 
-                if (recv(sock, jpg_raw, filesizei, 0) == -1)
+                // receive message, loop until entire message is received
+                int bytes_remaining = filesizei;
+                int received = 0;
+                while(bytes_remaining != 0)
                 {
-                    perror("Receive error on JPG.\n");
-                    return;
+                    received = recv(sock, &jpg_raw[filesizei - bytes_remaining], 
+                                                            bytes_remaining, 0);
+                    if (received == -1)
+                    {
+                        perror("Receive error on JPG.");
+                        exit(1);
+                    }
+                    else if (received == 0)
+                    {
+                        printf("Server closed connection.\n");
+                        exit(1);
+                    }
+
+                    bytes_remaining -= received;
+                    printf("Received %d bytes. %d remaining.\n",received, bytes_remaining); 
                 }
 
                 // receive the end frame message
-                recv(sock, &end, 1, 0);
+                recv(sock, end, 1, 0);
+                printf("Got %s for end message.\n", end);
 
                 // turn jpg into texture
-                jpg_to_texture(jpg_raw, filesizei, state); 
+                //jpg_to_texture(jpg_raw, filesizei, state); 
+                FILE * file;
+                file = fopen("test.jpg", "wb");
+                fwrite(jpg_raw, 1, filesizei, file);
+                fclose(file);
 
                 free(jpg_raw);
 
@@ -634,7 +656,8 @@ void *handler_thread(void *threadarg)
            else
            {
                 printf("Expected header but got: %s.\n", header);
-                return;
+                free(threadarg);
+                exit(1);
            }
        }
     }
@@ -786,7 +809,7 @@ int main (int argc, char** argv)
     init_model_proj(state);
 
     // initialise the OGLES texture(s)
-    init_textures(state);
+    //init_textures(state);
 
     // Open a socket connection to the server
     // This should thread out the recv and building of the texture
