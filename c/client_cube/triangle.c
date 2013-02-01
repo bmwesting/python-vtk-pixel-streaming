@@ -44,6 +44,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <netinet/in.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <jpeglib.h>
 
 #include "bcm_host.h"
 
@@ -203,6 +204,10 @@ static void init_ogl(CUBE_STATE_T *state)
 
    // Enable back face culling.
    glEnable(GL_CULL_FACE);
+
+    state->tex_buf1 = NULL;
+    state->tex_buf2 = NULL;
+    state->tex_buf3 = NULL;
 }
 
 /***********************************************************
@@ -379,25 +384,25 @@ static void redraw_scene(CUBE_STATE_T *state)
    glDrawArrays( GL_TRIANGLE_STRIP, 0, 4);
 
    // same pattern for other 5 faces - rotation chosen to make image orientation 'nice'
-   glBindTexture(GL_TEXTURE_2D, state->tex[1]);
+   glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(90.f, 0.f, 0.f, 1.f ); // back face normal along z axis
    glDrawArrays( GL_TRIANGLE_STRIP, 4, 4);
 
-   glBindTexture(GL_TEXTURE_2D, state->tex[2]);
+   glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(90.f, 1.f, 0.f, 0.f ); // left face normal along x axis
    glDrawArrays( GL_TRIANGLE_STRIP, 8, 4);
 
-   glBindTexture(GL_TEXTURE_2D, state->tex[3]);
+   glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(90.f, 1.f, 0.f, 0.f ); // right face normal along x axis
    glDrawArrays( GL_TRIANGLE_STRIP, 12, 4);
 
-   glBindTexture(GL_TEXTURE_2D, state->tex[4]);
+   glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(270.f, 0.f, 1.f, 0.f ); // top face normal along y axis
    glDrawArrays( GL_TRIANGLE_STRIP, 16, 4);
 
    glTexEnvx(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
-   glBindTexture(GL_TEXTURE_2D, state->tex[5]);
+   glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(90.f, 0.f, 1.f, 0.f ); // bottom face normal along y axis
    glDrawArrays( GL_TRIANGLE_STRIP, 20, 4);
 
@@ -517,6 +522,63 @@ static void load_tex_images(CUBE_STATE_T *state)
 }
 
 /*
+ * Takes a char stream of a jpg and binds it to a texture in state
+ *
+ */
+void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
+{
+    // decode jpg w/ ljpg
+    FILE * fd;
+    int width, height, depth;
+    fd = fmemopen(raw, raw_length, "rb");
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    JSAMPROW row_pointer[1];
+    unsigned long location = 0;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    jpeg_stdio_src(&cinfo, fd);
+    jpeg_read_header(&cinfo, 0);
+    cinfo.scale_num = 1;
+    cinfo.scale_denom = SCALE;
+    jpeg_start_decompress(&cinfo);
+    width = cinfo.output_width;
+    height = cinfo.output_height;
+    depth = cinfo.num_components; //should always be 3
+    image = (unsigned char *) malloc(width * height * depth);
+    row_pointer[0] = (unsigned char *) malloc(width * depth);
+    /* read one scan line at a time */
+    while( cinfo.output_scanline < cinfo.output_height )
+    {
+        jpeg_read_scanlines( &cinfo, row_pointer, 1 );
+        for( i=0; i< (width * depth); i++)
+            image[location++] = row_pointer[0][i];
+    }
+    fclose(fd);
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    // free previous image if needed
+    if (state->tex_buf1 != NULL)
+        free(state->tex_buf1);
+
+    // create texture
+    state->tex_buf1 = image;
+    glBindTexture(GL_TEXTURE_2D, state->tex[0]);
+    glTexImage2D(GL_TEXTURE_RECTANGLE_ARB, 0, depth, width, height, 0,
+                GL_RGB, GL_UNSIGNED_BYTE, state->tex_buf1);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLfloat)GL_NEAREST);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLfloat)GL_NEAREST);
+
+    // setup overall texture environment
+    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+
+    // free memory
+    free(row_pointer[0]);
+}
+
+/*
  * Receive loop for JPG Streams. Binds new JPG to texture.
  *
  */
@@ -529,7 +591,7 @@ void *handler_thread(void *threadarg)
 
     // protocol receives header, then file, then end
     char header[HEADER_SIZE];
-    char *jpg;
+    char *jpg_raw;
     char end;
 
     memset(header, 0, sizeof(header));
@@ -544,12 +606,29 @@ void *handler_thread(void *threadarg)
        else
        {
            // received the header (we think), parse it 
-           if(header[0] == "s")
+           if(header[0] == 's')
            {
                 // header received, filesize follows
                 char *filesize = header+1;
-                printf("Received header of size: %s.\n", filesize);
-                return;
+                printf("Receiving JPEG of size: %s.\n", filesize);
+
+                // allocate space for jpg and read from socket
+                filesizei = atoi(filesize);
+                jpg_raw = malloc(filesizei);
+
+                if (recv(sock, jpg_raw, filesizei, 0) == -1)
+                {
+                    perror("Receive error on JPG.\n");
+                    return;
+                }
+
+                // receive the end frame message
+                recv(sock, &end, 1, 0);
+
+                // turn jpg into texture
+                jpg_to_texture(jpg_raw, filesizei, state); 
+
+                free(jpg_raw);
 
            }
            else
@@ -560,6 +639,7 @@ void *handler_thread(void *threadarg)
        }
     }
 
+    free(threadarg);
 }
 
 /*
@@ -567,7 +647,7 @@ void *handler_thread(void *threadarg)
  *
  */
 
-int connect_to_server(char* hostname, int port, struct thread_data *data)
+int connect_to_server(char* hostname, int port, CUBE_STATE_T *state)
 {
     int sd; // file descriptor index
     struct sockaddr_in s_address; // server
@@ -607,7 +687,13 @@ int connect_to_server(char* hostname, int port, struct thread_data *data)
         return -1;
     }
 
-    // bind socket
+    // set timeout on socket
+    struct timeval timeout;
+    timeout.tv_sec = 0;     // seconds
+    timeout.tv_usec = 500000; // micro seconds ( 0.5 seconds)
+    setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)); 
+
+    // create the socket
     sd = socket(AF_INET, SOCK_STREAM, 0);
     if (sd < 0)
         exit(1);
@@ -622,10 +708,6 @@ int connect_to_server(char* hostname, int port, struct thread_data *data)
         */
     } 
 
-    struct timeval timeout;
-    timeout.tv_sec = 0;     // seconds
-    timeout.tv_usec = 500000; // micro seconds ( 0.5 seconds)
-    setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)); 
 
     // bind socket
     rv = bind(sd, (struct sockaddr *) &c_address, sizeof(c_address));
@@ -646,8 +728,12 @@ int connect_to_server(char* hostname, int port, struct thread_data *data)
     else
         printf("connected\n");
 
-    // --- Create a handler thread
+    // copy the socket descriptor and graphics state ptr to memory for the thread
+    struct thread_data *data = malloc(sizeof(struct thread_data));
     data->sd = sd;
+    data->state = state;
+
+    // --- Create a handler thread
     pthread_t thread;
     pthread_create(&thread, NULL, handler_thread, (void *) data); 
     pthread_detach(thread);
@@ -682,39 +768,44 @@ static void exit_func(void)
 
 int main (int argc, char** argv)
 {
-   bcm_host_init();
+    if(argc < 2)
+    {
+        printf("./client <hostname> <port>\n");
+        exit(1);
+    }
+    bcm_host_init();
 
-   // Clear application state
-   memset( state, 0, sizeof( *state ) );
+    // Clear application state
+    memset( state, 0, sizeof( *state ) );
       
-   // Start OGLES
-   init_ogl(state);
+    // Start OGLES
+    init_ogl(state);
+    glGenTextures(1, &state->tex[0]);
 
-   // Setup the model world
-   init_model_proj(state);
+    // Setup the model world
+    init_model_proj(state);
 
-   // initialise the OGLES texture(s)
-   init_textures(state);
+    // initialise the OGLES texture(s)
+    init_textures(state);
 
-   // Open a socket connection to the server
-   // This should thread out the recv and building of the texture
-   char* hostname;
-   int port = 1234;
-   if(argc > 1)
-   {
+    // Open a socket connection to the server
+    // This should thread out the recv and building of the texture
+    char* hostname;
+    int port = 1234;
+    if(argc > 1)
+    {
       hostname = argv[1];
       port = atoi(argv[2]); 
-   }
-   struct thread_data shared_data;
-   connect_to_server(hostname, port, &shared_data);
+    }
+    connect_to_server(hostname, port, state);
 
-   while (!terminate)
-   {
+    while (!terminate)
+    {
       //usleep(5*1000);
       update_model(state);
       redraw_scene(state);
-   }
-   exit_func();
-  return 0;
+    }
+    exit_func();
+    return 0;
 }
 
