@@ -529,33 +529,42 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
 {
     // decode jpg w/ ljpg
     FILE * fd;
-    char* image;
+    fd = fopen("test.jpg", "rb");
+    unsigned char* image;
     int width, height, depth;
-    fd = fmemopen(raw, raw_length, "rb");
+
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
-    JSAMPROW row_pointer[1];
-    unsigned long location = 0;
     cinfo.err = jpeg_std_error(&jerr);
     jpeg_create_decompress(&cinfo);
     jpeg_stdio_src(&cinfo, fd);
-    jpeg_read_header(&cinfo, 0);
-    cinfo.scale_num = 1;
-    cinfo.scale_denom = 1;
-    jpeg_start_decompress(&cinfo);
+    jpeg_read_header(&cinfo, 1);
+    if (!jpeg_start_decompress(&cinfo))
+    {
+        printf("Unable to decompress JPEG image!\n");
+        return;
+    }
     width = cinfo.output_width;
     height = cinfo.output_height;
     depth = cinfo.num_components; //should always be 3
+    printf("Decoding JPEG of %dx%dx%d\n", width, height, depth);
     image = (unsigned char *) malloc(width * height * depth);
-    row_pointer[0] = (unsigned char *) malloc(width * depth);
+    if (!image)
+        printf("Could not allocate image buffer memory.\n");
     /* read one scan line at a time */
-    while( cinfo.output_scanline < cinfo.output_height )
     {
-        jpeg_read_scanlines( &cinfo, row_pointer, 1 );
-        int i;
-        for( i=0; i< (width * depth); i++)
-            image[location++] = row_pointer[0][i];
+        JSAMPROW ptr = image;
+        while( cinfo.output_scanline < cinfo.output_height )
+        {
+            if (jpeg_read_scanlines(&cinfo, &ptr, 1) != 1)
+            {
+                printf("Cant read scanlines\n");
+            }
+
+            ptr += cinfo.output_width * cinfo.output_components;
+        }
     }
+
     fclose(fd);
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
@@ -566,6 +575,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
 
     // create texture
     state->tex_buf1 = image;
+    
     glBindTexture(GL_TEXTURE_2D, state->tex[0]);
     glTexImage2D(GL_TEXTURE_2D, 0, depth, width, height, 0,
                 GL_RGB, GL_UNSIGNED_BYTE, state->tex_buf1);
@@ -575,9 +585,7 @@ void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
     // setup overall texture environment
     glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-
-    // free memory
-    free(row_pointer[0]);
+    
 }
 
 /*
@@ -644,11 +652,13 @@ void *handler_thread(void *threadarg)
                 printf("Got %s for end message.\n", end);
 
                 // turn jpg into texture
-                //jpg_to_texture(jpg_raw, filesizei, state); 
+                jpg_to_texture(jpg_raw, filesizei, state); 
+                /*
                 FILE * file;
                 file = fopen("test.jpg", "wb");
                 fwrite(jpg_raw, 1, filesizei, file);
                 fclose(file);
+                */
 
                 free(jpg_raw);
 
@@ -810,6 +820,9 @@ int main (int argc, char** argv)
 
     // initialise the OGLES texture(s)
     //init_textures(state);
+    char* hello;
+    int length = 1;
+    jpg_to_texture(hello, length, state);
 
     // Open a socket connection to the server
     // This should thread out the recv and building of the texture
@@ -820,7 +833,7 @@ int main (int argc, char** argv)
       hostname = argv[1];
       port = atoi(argv[2]); 
     }
-    connect_to_server(hostname, port, state);
+    //connect_to_server(hostname, port, state);
 
     while (!terminate)
     {
@@ -828,7 +841,4 @@ int main (int argc, char** argv)
       update_model(state);
       redraw_scene(state);
     }
-    exit_func();
-    return 0;
 }
-
