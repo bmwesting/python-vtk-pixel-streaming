@@ -1,5 +1,5 @@
-OBJS=triangle.o
-BIN=hello_triangle.bin
+OBJS=triangle.o texture.o 
+BIN=texture.bin
 
 include ../Makefile.include
 

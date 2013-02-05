@@ -53,6 +53,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "EGL/eglext.h"
 
 #include "cube_texture_and_coords.h"
+#include "texture.h"
+#include "socket.h"
 
 #define PATH "./"
 
@@ -205,9 +207,6 @@ static void init_ogl(CUBE_STATE_T *state)
    // Enable back face culling.
    glEnable(GL_CULL_FACE);
 
-    state->tex_buf1 = NULL;
-    state->tex_buf2 = NULL;
-    state->tex_buf3 = NULL;
 }
 
 /***********************************************************
@@ -477,6 +476,26 @@ static void init_textures(CUBE_STATE_T *state)
 }
 
 /***********************************************************
+ * Name: init_textures2
+ *
+ * Arguments:
+ *       CUBE_STATE_T *state - holds OGLES model info
+ *
+ * Description:   Initialise OGL|ES texture surfaces to use image
+ *                buffers
+ *
+ * Returns: void
+ *
+ ***********************************************************/
+static void init_textures2(CUBE_STATE_T *state)
+{
+    jpg_tex_from_file(state->tex, "test.jpg");
+
+    // setup overall texture environment
+    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+}
+/***********************************************************
  * Name: load_tex_images
  *
  * Arguments:
@@ -519,73 +538,6 @@ static void load_tex_images(CUBE_STATE_T *state)
       assert(bytes_read == image_sz);  // some problem with file?
       fclose(tex_file3);
    }   
-}
-
-/*
- * Takes a char stream of a jpg and binds it to a texture in state
- *
- */
-void jpg_to_texture(char* raw, int raw_length, CUBE_STATE_T* state)
-{
-    // decode jpg w/ ljpg
-    FILE * fd;
-    fd = fopen("test.jpg", "rb");
-    unsigned char* image;
-    int width, height, depth;
-
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_decompress(&cinfo);
-    jpeg_stdio_src(&cinfo, fd);
-    jpeg_read_header(&cinfo, 1);
-    if (!jpeg_start_decompress(&cinfo))
-    {
-        printf("Unable to decompress JPEG image!\n");
-        return;
-    }
-    width = cinfo.output_width;
-    height = cinfo.output_height;
-    depth = cinfo.num_components; //should always be 3
-    printf("Decoding JPEG of %dx%dx%d\n", width, height, depth);
-    image = (unsigned char *) malloc(width * height * depth);
-    if (!image)
-        printf("Could not allocate image buffer memory.\n");
-    /* read one scan line at a time */
-    {
-        JSAMPROW ptr = image;
-        while( cinfo.output_scanline < cinfo.output_height )
-        {
-            if (jpeg_read_scanlines(&cinfo, &ptr, 1) != 1)
-            {
-                printf("Cant read scanlines\n");
-            }
-
-            ptr += cinfo.output_width * cinfo.output_components;
-        }
-    }
-
-    fclose(fd);
-    jpeg_finish_decompress(&cinfo);
-    jpeg_destroy_decompress(&cinfo);
-
-    // free previous image if needed
-    if (state->tex_buf1 != NULL)
-        free(state->tex_buf1);
-
-    // create texture
-    state->tex_buf1 = image;
-    
-    glBindTexture(GL_TEXTURE_2D, state->tex[0]);
-    glTexImage2D(GL_TEXTURE_2D, 0, depth, width, height, 0,
-                GL_RGB, GL_UNSIGNED_BYTE, state->tex_buf1);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLfloat)GL_NEAREST);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLfloat)GL_NEAREST);
-
-    // setup overall texture environment
-    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    
 }
 
 /*
@@ -652,7 +604,7 @@ void *handler_thread(void *threadarg)
                 printf("Got %s for end message.\n", end);
 
                 // turn jpg into texture
-                jpg_to_texture(jpg_raw, filesizei, state); 
+                //jpg_to_texture(jpg_raw, filesizei, state); 
                 /*
                 FILE * file;
                 file = fopen("test.jpg", "wb");
@@ -801,11 +753,7 @@ static void exit_func(void)
 
 int main (int argc, char** argv)
 {
-    if(argc < 2)
-    {
-        printf("./client <hostname> <port>\n");
-        exit(1);
-    }
+
     bcm_host_init();
 
     // Clear application state
@@ -813,16 +761,13 @@ int main (int argc, char** argv)
       
     // Start OGLES
     init_ogl(state);
-    glGenTextures(1, &state->tex[0]);
 
     // Setup the model world
     init_model_proj(state);
 
     // initialise the OGLES texture(s)
     //init_textures(state);
-    char* hello;
-    int length = 1;
-    jpg_to_texture(hello, length, state);
+    init_textures2(state);
 
     // Open a socket connection to the server
     // This should thread out the recv and building of the texture
@@ -833,6 +778,8 @@ int main (int argc, char** argv)
       hostname = argv[1];
       port = atoi(argv[2]); 
     }
+
+    // connect to the server
     //connect_to_server(hostname, port, state);
 
     while (!terminate)
