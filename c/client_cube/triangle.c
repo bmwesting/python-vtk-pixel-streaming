@@ -39,11 +39,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assert.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <fcntl.h>
 #include <jpeglib.h>
 
 #include "bcm_host.h"
@@ -74,6 +69,7 @@ typedef struct
 // OpenGL|ES objects
    EGLDisplay display;
    EGLSurface surface;
+   EGLConfig config;
    EGLContext context;
    GLuint tex[6];
 // model rotation vector and direction
@@ -91,6 +87,10 @@ typedef struct
    char *tex_buf1;
    char *tex_buf2;
    char *tex_buf3;
+   struct image_struct image;
+   int new;
+// mutex lock
+    pthread_mutex_t *lock;
 } CUBE_STATE_T;
 
 struct thread_data{
@@ -113,6 +113,8 @@ static CUBE_STATE_T _state, *state=&_state;
 
 
 /***********************************************************
+ * Name: init_ogl
+ *
  * Name: init_ogl
  *
  * Arguments:
@@ -147,8 +149,6 @@ static void init_ogl(CUBE_STATE_T *state)
       EGL_NONE
    };
    
-   EGLConfig config;
-
    // get an EGL display connection
    state->display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    assert(state->display!=EGL_NO_DISPLAY);
@@ -158,11 +158,11 @@ static void init_ogl(CUBE_STATE_T *state)
    assert(EGL_FALSE != result);
 
    // get an appropriate EGL frame buffer configuration
-   result = eglChooseConfig(state->display, attribute_list, &config, 1, &num_config);
+   result = eglChooseConfig(state->display, attribute_list, &(state->config), 1, &num_config);
    assert(EGL_FALSE != result);
 
    // create an EGL rendering context
-   state->context = eglCreateContext(state->display, config, EGL_NO_CONTEXT, NULL);
+   state->context = eglCreateContext(state->display, state->config, EGL_NO_CONTEXT, NULL);
    assert(state->context!=EGL_NO_CONTEXT);
 
    // create an EGL window surface
@@ -191,7 +191,7 @@ static void init_ogl(CUBE_STATE_T *state)
    nativewindow.height = state->screen_height;
    vc_dispmanx_update_submit_sync( dispman_update );
       
-   state->surface = eglCreateWindowSurface( state->display, config, &nativewindow, NULL );
+   state->surface = eglCreateWindowSurface( state->display, state->config, &nativewindow, NULL );
    assert(state->surface != EGL_NO_SURFACE);
 
    // connect the context to the surface
@@ -399,8 +399,6 @@ static void redraw_scene(CUBE_STATE_T *state)
    glRotatef(270.f, 0.f, 1.f, 0.f ); // top face normal along y axis
    glDrawArrays( GL_TRIANGLE_STRIP, 16, 4);
 
-   glTexEnvx(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
    glBindTexture(GL_TEXTURE_2D, state->tex[0]);
    glRotatef(90.f, 0.f, 1.f, 0.f ); // bottom face normal along y axis
    glDrawArrays( GL_TRIANGLE_STRIP, 20, 4);
@@ -553,16 +551,16 @@ void *handler_thread(void *threadarg)
 
     // protocol receives header, then file, then end
     char header[HEADER_SIZE];
-    char *jpg_raw;
+    unsigned char* jpg_raw, image;
     char end[1];
 
     memset(header, 0, sizeof(header));
 
     while(1)
     {
-       if (recv(sock, header, HEADER_SIZE, 0) == -1)
+       if (tcp_recv(sock, header, HEADER_SIZE) < 0)
        {
-            perror("recieve error\n");
+            perror("Header not received.\n");
             break;
        }
        else
@@ -577,49 +575,35 @@ void *handler_thread(void *threadarg)
                 // allocate space for jpg and read from socket
                 jpg_raw = malloc(filesizei);
 
-                // receive message, loop until entire message is received
-                int bytes_remaining = filesizei;
-                int received = 0;
-                while(bytes_remaining != 0)
+                if (tcp_recv(sock, jpg_raw, filesizei) < 0)
                 {
-                    received = recv(sock, &jpg_raw[filesizei - bytes_remaining], 
-                                                            bytes_remaining, 0);
-                    if (received == -1)
-                    {
-                        perror("Receive error on JPG.");
-                        exit(1);
-                    }
-                    else if (received == 0)
-                    {
-                        printf("Server closed connection.\n");
-                        exit(1);
-                    }
-
-                    bytes_remaining -= received;
-                    printf("Received %d bytes. %d remaining.\n",received, bytes_remaining); 
+                    printf("Error receiving JPEG.\n");
+                    free(jpg_raw);
+                    break;
                 }
 
                 // receive the end frame message
-                recv(sock, end, 1, 0);
-                printf("Got %s for end message.\n", end);
+                tcp_recv(sock, end, 1);
 
-                // turn jpg into texture
-                //jpg_to_texture(jpg_raw, filesizei, state); 
-                /*
-                FILE * file;
-                file = fopen("test.jpg", "wb");
-                fwrite(jpg_raw, 1, filesizei, file);
-                fclose(file);
-                */
+                printf("Finished receiving JPEG\n");
+
+                free(state->image.image); // free the last texture
+
+                jpg_raw_from_mem(jpg_raw, filesizei, &(state->image)); 
+                unsigned char* im = state->image.image;
+                int w = 512*512/2;
+                printf("First Pixel: %u, %u, %u\n", im[0], im[1], im[2]);
+                printf("Middle Pixel: %u, %u, %u\n", im[w], im[w+1], im[w+2]);
+                pthread_mutex_lock(state->lock);
+                state->new = 1;
+                pthread_mutex_unlock(state->lock);
 
                 free(jpg_raw);
-
            }
            else
            {
                 printf("Expected header but got: %s.\n", header);
-                free(threadarg);
-                exit(1);
+                break;
            }
        }
     }
@@ -634,91 +618,20 @@ void *handler_thread(void *threadarg)
 
 int connect_to_server(char* hostname, int port, CUBE_STATE_T *state)
 {
-    int sd; // file descriptor index
-    struct sockaddr_in s_address; // server
-    struct sockaddr_in c_address; // client
-    struct hostent *hp;
-    int rv;
-    
-    // --- Create a socket connection
-    
-    // IP lookup
-    hp = gethostbyname(hostname);
-    if (hp)
+
+    int sd = tcp_connect(hostname, port);
+    if(sd < 0)
     {
-        printf("host found: %p\n", hp);
-        printf("host found: %s\n", hp->h_name );
-    }
-    else
-    {
-        printf("host not found\n");
-    }
-
-    // fill socket structure
-    memset(&s_address, 0, sizeof(s_address));
-    s_address.sin_family = AF_INET;
-    memcpy(&s_address.sin_addr, hp->h_addr, hp->h_length);
-    s_address.sin_port = htons(port);
-
-    memset(&c_address, 0, sizeof(c_address));
-    c_address.sin_family = AF_INET;
-    c_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    c_address.sin_port = htons(port);
-
-    // get an INET socket
-    if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
-    {
-        perror("socket error");
-        return -1;
-    }
-
-    // set timeout on socket
-    struct timeval timeout;
-    timeout.tv_sec = 0;     // seconds
-    timeout.tv_usec = 500000; // micro seconds ( 0.5 seconds)
-    setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)); 
-
-    // create the socket
-    sd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sd < 0)
-        exit(1);
-    else    {
-        printf("socket is opened: %i \n", sd);
-        /*
-        rv = fcntl(sd, F_SETFL, O_NONBLOCK); // socket set to NONBLOCK
-        if(rv < 0)
-            printf("nonblock failed: %i %s\n", errno, strerror(errno));
-        else
-            printf("socket is set nonblock\n");
-        */
-    } 
-
-
-    // bind socket
-    rv = bind(sd, (struct sockaddr *) &c_address, sizeof(c_address));
-    if (rv < 0)     {
-        printf("MAIN: ERROR bind() %i: %s\n", errno, strerror(errno));
+        printf("Could not establish connection to cloud resource.\n");
         exit(1);
     }
-    else
-        printf("socket is bound\n");
-
-    // connect to server
-    rv = connect(sd, (struct sockaddr *) &s_address, sizeof(s_address));
-    printf("rv = %i\n", rv);
-    if (rv < 0 && errno != EINPROGRESS)     {
-        printf("MAIN: ERROR connect() %i:  %s\n", errno, strerror(errno));
-        exit(1);
-    }
-    else
-        printf("connected\n");
 
     // copy the socket descriptor and graphics state ptr to memory for the thread
     struct thread_data *data = malloc(sizeof(struct thread_data));
     data->sd = sd;
     data->state = state;
 
-    // --- Create a handler thread
+    // Create a handler thread and a mutex for locking gl state
     pthread_t thread;
     pthread_create(&thread, NULL, handler_thread, (void *) data); 
     pthread_detach(thread);
@@ -758,6 +671,8 @@ int main (int argc, char** argv)
 
     // Clear application state
     memset( state, 0, sizeof( *state ) );
+
+    state->new = 0;
       
     // Start OGLES
     init_ogl(state);
@@ -767,7 +682,7 @@ int main (int argc, char** argv)
 
     // initialise the OGLES texture(s)
     //init_textures(state);
-    init_textures2(state);
+    //init_textures2(state);
 
     // Open a socket connection to the server
     // This should thread out the recv and building of the texture
@@ -779,13 +694,34 @@ int main (int argc, char** argv)
       port = atoi(argv[2]); 
     }
 
+    // set up the mutex
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    state->lock = &mutex;
+
     // connect to the server
-    //connect_to_server(hostname, port, state);
+    connect_to_server(hostname, port, state);
 
     while (!terminate)
     {
       //usleep(5*1000);
       update_model(state);
+      if(state->new)
+      {
+          pthread_mutex_lock(state->lock);
+          //bind the new texture
+            glGenTextures(1, state->tex);
+            printf("Texture generated: %d\n", state->tex[0]);
+            glBindTexture(GL_TEXTURE_2D, state->tex[0]);
+            printf("%d\n", state->image.width);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, state->image.width, state->image.height, 0,
+                        GL_RGB, GL_UNSIGNED_BYTE, state->image.image);
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLfloat)GL_NEAREST);
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLfloat)GL_NEAREST);
+            glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            state->new = 0;
+            pthread_mutex_unlock(state->lock);
+        }
       redraw_scene(state);
     }
 }
