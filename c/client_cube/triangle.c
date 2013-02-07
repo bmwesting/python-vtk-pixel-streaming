@@ -587,14 +587,13 @@ void *handler_thread(void *threadarg)
 
                 printf("Finished receiving JPEG\n");
 
-                free(state->image.image); // free the last texture
+                struct image_struct image;
+                jpg_raw_from_mem(jpg_raw, filesizei, &image); 
 
-                jpg_raw_from_mem(jpg_raw, filesizei, &(state->image)); 
-                unsigned char* im = state->image.image;
-                int w = 512*512/2;
-                printf("First Pixel: %u, %u, %u\n", im[0], im[1], im[2]);
-                printf("Middle Pixel: %u, %u, %u\n", im[w], im[w+1], im[w+2]);
+                // assign the new texture atomically
                 pthread_mutex_lock(state->lock);
+                free(state->image.image);
+                state->image = image;
                 state->new = 1;
                 pthread_mutex_unlock(state->lock);
 
@@ -707,12 +706,11 @@ int main (int argc, char** argv)
       update_model(state);
       if(state->new)
       {
+          glDeleteTextures(1, state->tex);
+          glGenTextures(1, state->tex);
+          glBindTexture(GL_TEXTURE_2D, state->tex[0]);
+          // atomically upload the new texture
           pthread_mutex_lock(state->lock);
-          //bind the new texture
-            glGenTextures(1, state->tex);
-            printf("Texture generated: %d\n", state->tex[0]);
-            glBindTexture(GL_TEXTURE_2D, state->tex[0]);
-            printf("%d\n", state->image.width);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, state->image.width, state->image.height, 0,
                         GL_RGB, GL_UNSIGNED_BYTE, state->image.image);
             glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLfloat)GL_NEAREST);
